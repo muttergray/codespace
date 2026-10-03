@@ -25,6 +25,9 @@
   const WATCHLIST_COLUMNS = ['tmdbID', 'imdbID', 'Title', 'Year'];
   const TV_COLUMNS = ['List', 'MustID', 'Type', 'Title', 'Year', 'Status', 'Rating10', 'Date', 'Review'];
 
+  const normalizeUsername = value => String(value || '').trim()
+    .replace(/^(?:https?:\/\/)?(?:www\.)?mustapp\.com\/@?/i, '').replace(/^@+/, '').split(/[/?#]/)[0].trim();
+  const user = normalizeUsername(USERNAME);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const log = (...args) => console.log('%c[Must→Letterboxd]', 'color:#00c030;font-weight:bold', ...args);
 
@@ -35,15 +38,27 @@
         // No cookies: the public API answers the same as for a logged-out visitor.
         response = await fetch(url, { credentials: 'omit', ...options });
       } catch (error) {
-        if (attempt >= 4) throw new Error(`${label}: ${error.message}`);
+        if (attempt >= 5) throw new Error(`${label}: ${error.message}`);
         await sleep(1000 * 2 ** attempt);
         continue;
       }
-      if (response.ok) return response.json();
+      if (response.ok) {
+        try { return await response.json(); } catch { throw new Error(`${label}: the server did not return JSON`); }
+      }
       const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-      if (!retryable || attempt >= 4) throw new Error(`${label}: HTTP ${response.status}`);
-      await sleep((Number(response.headers.get('retry-after')) || 2 ** attempt) * 1000);
+      if (!retryable || attempt >= 5) throw new Error(`${label}: HTTP ${response.status}`);
+      const retryAfter = Math.min(Math.max(Number(response.headers.get('retry-after')) || 0, 0), 300);
+      await sleep((retryAfter || 2 ** attempt) * 1000);
     }
+  }
+
+  async function fetchList(url, ids, headers, label) {
+    const result = await fetchJson(url, { method: 'POST', headers, body: JSON.stringify({ ids }) }, label);
+    if (!Array.isArray(result)) {
+      const message = result && result.error && typeof result.error === 'object' ? result.error.message : JSON.stringify(result);
+      throw new Error(`${label}: unexpected reply: ${String(message).slice(0, 200)}`);
+    }
+    return result.filter(item => item && typeof item === 'object' && !Array.isArray(item));
   }
 
   async function fetchMustBackup(username) {
@@ -55,15 +70,16 @@
     const lists = profile.lists;
     const ids = [...new Set([...(lists.watched || []), ...(lists.want || []), ...(lists.shows || [])])];
     const headers = { ...MUST_HEADERS, 'accept-language': LANG };
-    const products = [], reviews = [];
+    const products = [], reviews = [], reviewsFailed = [];
     for (let start = 0; start < ids.length; start += MUST_BATCH) {
-      const body = JSON.stringify({ ids: ids.slice(start, start + MUST_BATCH) });
+      const batch = ids.slice(start, start + MUST_BATCH);
       const url = `${API}/users/id/${profile.id}/products?embed=`;
-      products.push(...await fetchJson(url + 'product', { method: 'POST', headers, body }, 'Must products'));
+      products.push(...await fetchList(url + 'product', batch, headers, 'Must products'));
       try {
-        reviews.push(...await fetchJson(url + 'review', { method: 'POST', headers, body }, 'Must reviews'));
+        reviews.push(...await fetchList(url + 'review', batch, headers, 'Must reviews'));
       } catch (error) {
-        log(`warning: reviews unavailable (${error.message})`);
+        reviewsFailed.push(...batch);
+        log(`warning: reviews for ${batch.length} titles unavailable (${error.message})`);
       }
       log(`Must: ${Math.min(start + MUST_BATCH, ids.length)}/${ids.length}`);
     }
@@ -75,6 +91,7 @@
       profile,
       products,
       reviews,
+      reviews_failed: reviewsFailed,
     };
   }
 
@@ -129,11 +146,12 @@
       if (text) target.review = { body: text };
     });
 
-    const films = [], tv = [], seen = new Set();
+    const films = [], tv = [], missing = [], seen = new Set();
     for (const [listName, ids] of [['watched', lists.watched || []], ['want', lists.want || []], ['shows', lists.shows || []]]) {
       for (const pid of ids) {
-        if (seen.has(pid) || !byId.has(pid)) continue;
+        if (seen.has(pid)) continue;
         seen.add(pid);
+        if (!byId.has(pid)) { missing.push(pid); continue; }
         const { product, info } = byId.get(pid);
         const kind = product.type || 'movie';
         const entry = {
@@ -152,7 +170,7 @@
         (TV_TYPES.has(kind) || listName === 'shows' ? tv : films).push(entry);
       }
     }
-    return { films, tv };
+    return { films, tv, missing };
   }
 
   function applyDatePolicy(watched, mode, windowDays, bulkPerDay) {
@@ -235,7 +253,7 @@
     document.getElementById('must-lb-panel')?.remove();
     const panel = document.createElement('div');
     panel.id = 'must-lb-panel';
-    panel.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;width:min(420px,calc(100vw - 32px));' +
+    panel.style.cssText = 'box-sizing:border-box;position:fixed;top:16px;right:16px;z-index:2147483647;width:min(420px,calc(100vw - 32px));' +
       'max-height:calc(100vh - 32px);overflow:auto;background:#14181c;color:#def;border:2px solid #00c030;' +
       'border-radius:12px;padding:16px;font:14px/1.45 -apple-system,system-ui,sans-serif;box-shadow:0 8px 32px #0008';
     const title = document.createElement('div');
@@ -267,9 +285,9 @@
   // ------------------------------------------------------------ main
 
   try {
-    log(`Downloading Must profile @${USERNAME}...`);
-    const backup = await fetchMustBackup(USERNAME);
-    const { films, tv } = buildEntries(backup);
+    log(`Downloading Must profile @${user}...`);
+    const backup = await fetchMustBackup(user);
+    const { films, tv, missing } = buildEntries(backup);
     const watched = films.filter(e => e.list === 'watched');
     const want = sortWatchlist(films.filter(e => e.list === 'want'));
     if (!INCLUDE_REVIEWS) watched.forEach(e => { e.review = ''; });
@@ -278,25 +296,28 @@
     const files = [];
     const addParts = (stem, parts) => parts.forEach((text, i) =>
       files.push({ name: `${stem}${parts.length > 1 ? `_part${i + 1}` : ''}.csv`, text, type: 'text/csv' }));
-    addParts(`${USERNAME}_letterboxd_watched`, csvParts(WATCHED_COLUMNS, sortWatched(watched).map(watchedRow)));
-    addParts(`${USERNAME}_letterboxd_watchlist`, csvParts(WATCHLIST_COLUMNS, want.map(watchlistRow)));
-    addParts(`${USERNAME}_must_tv`, [csvLine(TV_COLUMNS) + tv.map(tvRow).map(csvLine).join('')]);
-    files.push({ name: `${USERNAME}_must_backup.json`, text: JSON.stringify(backup, null, 1), type: 'application/json' });
+    addParts(`${user}_letterboxd_watched`, csvParts(WATCHED_COLUMNS, sortWatched(watched).map(watchedRow)));
+    addParts(`${user}_letterboxd_watchlist`, csvParts(WATCHLIST_COLUMNS, want.map(watchlistRow)));
+    addParts(`${user}_must_tv`, [csvLine(TV_COLUMNS) + tv.map(tvRow).map(csvLine).join('')]);
+    files.push({ name: `${user}_must_backup.json`, text: JSON.stringify(backup, null, 1), type: 'application/json' });
 
     const rated = watched.filter(e => e.rating).length;
     const reviewed = watched.filter(e => e.review).length;
     const lines = [
-      `@${USERNAME}: просмотрено ${watched.length} фильмов (с оценкой ${rated}, с рецензией ${reviewed}), хочу посмотреть ${want.length}, сериалов ${tv.length} (в Letterboxd не переносятся).`,
+      `@${user}. Просмотренные фильмы: ${watched.length} (с оценкой: ${rated}, с рецензией: ${reviewed}). Хочу посмотреть: ${want.length}. Сериалы: ${tv.length} (в Letterboxd не переносятся).`,
       DATES === 'smart'
         ? `Даты для дневника: оставлено ${stats.kept}; убрано ${stats.window} из первых ${WINDOW_DAYS} дней в Must и ${stats.bulk} из дней с ${BULK_PER_DAY}+ фильмами; без даты ${stats.missing}.`
         : `Даты для дневника (${DATES}): оставлено ${stats.kept}, без даты ${stats.missing}.`,
+      ...(backup.reviews_failed.length ? [`⚠ Рецензии для ${backup.reviews_failed.length} позиций не скачались — запусти скрипт ещё раз перед импортом.`] : []),
+      ...(missing.length ? [`⚠ Must не вернул данные для ${missing.length} позиций (id: ${missing.join(', ')}) — они не попали в файлы.`] : []),
       'Скачай файлы ниже. *_letterboxd_watched.csv → letterboxd.com/import, *_letterboxd_watchlist.csv → страница Watchlist → «Import films to watchlist…».',
     ];
     lines.forEach(line => log(line));
     showPanel(lines, files);
     window.mustLetterboxdExport = { backup, files, stats };
   } catch (error) {
-    log('Ошибка:', error.message);
-    showPanel([`Ошибка: ${error.message}`], []);
+    const hint = /Must profile: HTTP 404/.test(error.message) ? ` — профиль @${user} не найден, проверь USERNAME в начале скрипта` : '';
+    log('Ошибка:', error.message + hint);
+    showPanel([`Ошибка: ${error.message}${hint}`], []);
   }
 })();

@@ -66,7 +66,8 @@ class HelpersTest(unittest.TestCase):
     def test_normalize_username(self):
         for value in ["vladimirsalov", "@vladimirsalov", " vladimirsalov ",
                       "https://mustapp.com/@vladimirsalov", "https://mustapp.com/@vladimirsalov/watched",
-                      "http://www.mustapp.com/vladimirsalov?tab=1"]:
+                      "http://www.mustapp.com/vladimirsalov?tab=1", "mustapp.com/@vladimirsalov",
+                      "www.mustapp.com/@vladimirsalov/want"]:
             self.assertEqual(m.normalize_username(value), "vladimirsalov", value)
 
     def test_rating10(self):
@@ -133,7 +134,7 @@ class HelpersTest(unittest.TestCase):
 
 class BuildEntriesTest(unittest.TestCase):
     def test_splits_lists_and_types(self):
-        films, tv = m.build_entries(load_fixture())
+        films, tv, _ = m.build_entries(load_fixture())
         self.assertEqual(sum(e["list"] == "watched" for e in films), 12)
         self.assertEqual(sum(e["list"] == "want" for e in films), 2)
         self.assertEqual(sorted(e["title"] for e in tv), ["Breaking Bad", "Severance"])
@@ -141,7 +142,7 @@ class BuildEntriesTest(unittest.TestCase):
     def test_merges_reviews_by_product_id(self):
         backup = load_fixture()
         backup["reviews"].reverse()  # order must not matter when ids are present
-        films, _ = m.build_entries(backup)
+        films, _, _ = m.build_entries(backup)
         brat = next(e for e in films if e["must_id"] == 103)
         self.assertEqual(brat["review"], "Лучший фильм\r\nдевяностых")
 
@@ -149,31 +150,38 @@ class BuildEntriesTest(unittest.TestCase):
         backup = load_fixture()
         for item in backup["reviews"]:
             del item["user_product_info"]["product_id"]
-        films, _ = m.build_entries(backup)
+        films, _, _ = m.build_entries(backup)
         self.assertEqual(next(e for e in films if e["must_id"] == 104)["review"], "IMAX 🔥")
 
     def test_missing_reviews_ok(self):
         backup = load_fixture()
         backup["reviews"] = []
-        films, _ = m.build_entries(backup)
+        films, _, _ = m.build_entries(backup)
         self.assertTrue(all(e["review"] == "" for e in films))
 
     def test_prefers_watched_at(self):
         backup = load_fixture()
         backup["products"][0]["user_product_info"]["watched_at"] = "2019-05-05T00:00:00Z"
-        films, _ = m.build_entries(backup)
+        films, _, _ = m.build_entries(backup)
         self.assertEqual(films[0]["date"], "2019-05-05")
 
-    def test_product_missing_from_response_is_skipped(self):
+    def test_product_missing_from_response_is_reported(self):
         backup = load_fixture()
         backup["profile"]["lists"]["watched"].append(999)
-        films, _ = m.build_entries(backup)
+        films, _, missing = m.build_entries(backup)
         self.assertNotIn(999, [e["must_id"] for e in films])
+        self.assertEqual(missing, [999])
+
+    def test_lone_surrogate_becomes_replacement_char(self):
+        backup = load_fixture()
+        backup["reviews"][0]["user_product_info"]["review"] = {"body": "cut off \ud83d"}
+        films, _, _ = m.build_entries(m.no_surrogates(backup))
+        self.assertEqual(films[0]["review"], "cut off \ufffd")
 
 
 class DatePolicyTest(unittest.TestCase):
     def watched(self):
-        films, _ = m.build_entries(load_fixture())
+        films, _, _ = m.build_entries(load_fixture())
         return [e for e in films if e["list"] == "watched"]
 
     def test_smart(self):
@@ -233,7 +241,8 @@ class ConvertTest(unittest.TestCase):
         watchlist = read_csv(os.path.join(self.out, "testuser_letterboxd_watchlist.csv"))
         # Must lists newest first; the watchlist file goes oldest first.
         self.assertEqual([r["Title"] for r in watchlist], ["Mickey 17", '"Weird" Title, With Comma'])
-        tv = list(csv.DictReader(open(os.path.join(self.out, "testuser_must_tv.csv"), encoding="utf-8", newline="")))
+        with open(os.path.join(self.out, "testuser_must_tv.csv"), encoding="utf-8", newline="") as file:
+            tv = list(csv.DictReader(file))
         self.assertEqual([r["Title"] for r in tv], ["Breaking Bad", "Severance"])
         self.assertIn("Watched films:   12", report)
 
@@ -242,6 +251,31 @@ class ConvertTest(unittest.TestCase):
         m.convert(load_fixture(), self.out, dates="all", tz=ZoneInfo("Europe/Moscow"))
         watched = read_csv(os.path.join(self.out, "testuser_letterboxd_watched.csv"))
         self.assertEqual(next(r for r in watched if r["Title"] == "Perfect Days")["WatchedDate"], "2025-01-06")
+
+    def test_report_mentions_problems(self):
+        backup = load_fixture()
+        backup["profile"]["lists"]["want"].append(999)
+        backup["reviews_failed"] = [101, 102]
+        _, report = m.convert(backup, self.out)
+        self.assertIn("reviews could not be downloaded for 2 titles", report)
+        self.assertIn("Not returned by Must (1), not exported: Must ids 999", report)
+
+    def test_rerun_removes_stale_parts(self):
+        for name in ["testuser_letterboxd_watched_part1.csv", "testuser_letterboxd_watched_part2.csv"]:
+            open(os.path.join(self.out, name), "w").close()
+        m.convert(load_fixture(), self.out)
+        self.assertEqual(sorted(n for n in os.listdir(self.out) if "watched" in n), ["testuser_letterboxd_watched.csv"])
+        self.assertIn("testuser_letterboxd_watchlist.csv", os.listdir(self.out))
+
+    def test_load_backup_errors(self):
+        with self.assertRaisesRegex(RuntimeError, "cannot read"):
+            m.load_backup(os.path.join(self.out, "nope.json"))
+        with self.assertRaisesRegex(RuntimeError, "not a Must backup"):
+            m.load_backup(os.path.join(HERE, "test_must_to_letterboxd.py"))
+
+    def test_bad_time_zone_is_a_usage_error(self):
+        with self.assertRaises(SystemExit):
+            m.main(["--from-json", FIXTURE, "--out-dir", self.out, "--tz", "Moscow"])
 
     def test_no_reviews(self):
         m.convert(load_fixture(), self.out, include_reviews=False)
@@ -273,9 +307,42 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(total, 12 + 5000)
 
 
+class TmdbMatchTest(unittest.TestCase):
+    def match(self, title, year, *responses):
+        replies = iter(responses)
+        calls = []
+
+        def fake_fetch(url, **kwargs):
+            calls.append(url)
+            return next(replies)
+        old, m.fetch_json = m.fetch_json, fake_fetch
+        try:
+            return m.tmdb_match(title, year, {}, "en-US")
+        finally:
+            m.fetch_json = old
+
+    def test_exact_title_and_year(self):
+        hits = {"results": [{"id": 1, "title": "Brother", "release_date": "1997-05-17", "popularity": 5},
+                            {"id": 2, "title": "Brother", "release_date": "2000-01-01", "popularity": 50}]}
+        self.assertEqual(self.match("Brother", "1997", hits, {"imdb_id": "tt0118767"}), ("1", "tt0118767"))
+
+    def test_rejects_unrelated_hits(self):
+        self.assertEqual(self.match("Unknown Festival Short", "", {"results": [
+            {"id": 48289, "title": "Unknown", "release_date": "2011-02-16", "popularity": 40}]}), ("", ""))
+        self.assertEqual(self.match("Some Film", "2020", {"results": []}, {"results": [
+            {"id": 7, "title": "Other Film", "release_date": "2018-01-01"}]}), ("", ""))
+
+    def test_same_year_different_title_is_accepted(self):
+        hits = {"results": [{"id": 9, "title": "Brat", "original_title": "Брат", "release_date": "1997-05-17"}]}
+        self.assertEqual(self.match("Brother", "1997", hits, {"imdb_id": None}), ("9", ""))
+
+
 class FakeMust(http.server.BaseHTTPRequestHandler):
     backup = None
     requests = []
+    drop_products = 0
+    review_status = 200
+    retry_after = None
 
     def log_message(self, *args):
         pass
@@ -292,6 +359,13 @@ class FakeMust(http.server.BaseHTTPRequestHandler):
         FakeMust.requests.append(("GET", self.path, {k.lower(): v for k, v in self.headers.items()}, None))
         if self.path == "/api/users/uri/testuser":
             self.reply(self.backup["profile"])
+        elif self.path == "/maintenance":
+            body = b"<html>Down for maintenance</html>"
+            self.send_response(200)
+            self.send_header("content-type", "text/html")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.reply({"error": {"message": "User not found"}}, 404)
 
@@ -300,6 +374,19 @@ class FakeMust(http.server.BaseHTTPRequestHandler):
         FakeMust.requests.append(("POST", self.path, {k.lower(): v for k, v in self.headers.items()}, body))
         if self.headers.get("bearer") != m.MUST_HEADERS["bearer"]:
             return self.reply({"error": "no bearer"}, 403)
+        if self.path.endswith("embed=product") and FakeMust.drop_products:
+            FakeMust.drop_products -= 1
+            self.close_connection = True
+            return  # no response at all: the client sees a dropped connection
+        if self.path.endswith("embed=review") and FakeMust.review_status != 200:
+            if FakeMust.retry_after:
+                body = b"busy"
+                self.send_response(FakeMust.review_status)
+                self.send_header("retry-after", FakeMust.retry_after)
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            return self.reply({"error": {"message": "nope"}}, FakeMust.review_status)
         ids = body["ids"]
         source = self.backup["reviews"] if self.path.endswith("embed=review") else self.backup["products"]
         by_id = {m.product_id(item) or item["user_product_info"]["product_id"]: item for item in source}
@@ -311,6 +398,9 @@ class FetchTest(unittest.TestCase):
         os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost"
         FakeMust.backup = load_fixture()
         FakeMust.requests = []
+        FakeMust.drop_products = 0
+        FakeMust.review_status = 200
+        FakeMust.retry_after = None
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeMust)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.old_api = m.MUST_API
@@ -336,6 +426,33 @@ class FetchTest(unittest.TestCase):
         m.fetch_must_backup("testuser")
         sizes = [len(r[3]["ids"]) for r in FakeMust.requests if r[1].endswith("embed=product")]
         self.assertEqual(sizes, [100, 100, 66])  # 16 fixture ids + 250
+
+    def test_dropped_connection_is_retried(self):
+        FakeMust.drop_products = 1
+        backup = m.fetch_must_backup("testuser")
+        self.assertEqual(len(backup["products"]), 16)
+
+    def test_failed_reviews_are_recorded(self):
+        FakeMust.review_status = 400
+        backup = m.fetch_must_backup("testuser")
+        self.assertEqual(backup["reviews"], [])
+        self.assertEqual(len(backup["reviews_failed"]), 16)
+
+    def test_retry_after_date_does_not_crash(self):
+        FakeMust.review_status, FakeMust.retry_after = 503, "Wed, 21 Oct 2026 07:28:00 GMT"
+        old_sleep, m.time.sleep = m.time.sleep, lambda seconds: None
+        try:
+            backup = m.fetch_must_backup("testuser")
+        finally:
+            m.time.sleep = old_sleep
+        self.assertEqual(len(backup["reviews_failed"]), 16)
+        self.assertEqual(m.retry_after("1.5"), 1.5)
+        self.assertEqual(m.retry_after("9999"), 300)
+        self.assertEqual(m.retry_after(None), 0)
+
+    def test_non_json_reply(self):
+        with self.assertRaisesRegex(RuntimeError, "did not return JSON"):
+            m.fetch_json(f"http://127.0.0.1:{self.server.server_port}/maintenance", label="x")
 
     def test_unknown_user(self):
         with self.assertRaises(RuntimeError) as error:

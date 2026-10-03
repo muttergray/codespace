@@ -56,7 +56,7 @@ function pythonFiles(backup, extraArgs, tz) {
   return files;
 }
 
-async function runCase(browser, name, backup, settings = {}, pyArgs = [], tz = 'Europe/Moscow') {
+async function runCase(browser, name, backup, settings = {}, pyArgs = [], tz = 'Europe/Moscow', options = {}) {
   const username = backup.profile.uri;
   const requests = [];
   const context = await browser.newContext({ acceptDownloads: true, timezoneId: tz });
@@ -75,6 +75,9 @@ async function runCase(browser, name, backup, settings = {}, pyArgs = [], tz = '
       assert.equal(request.headers()['content-type'], 'application/json;v=1873');
       const ids = JSON.parse(request.postData()).ids;
       assert.ok(ids.length <= 100, 'batch over 100 ids');
+      if (url.searchParams.get('embed') === 'review' && options.reviewStatus) {
+        return route.fulfill({ status: options.reviewStatus, contentType: 'application/json', body: '{"error":{"message":"nope"}}' });
+      }
       const source = url.searchParams.get('embed') === 'review' ? backup.reviews : backup.products;
       const byId = new Map(source.map(i => [(i.product || {}).id || i.user_product_info.product_id, i]));
       return json(ids.filter(id => byId.has(id)).map(id => byId.get(id)));
@@ -101,6 +104,9 @@ async function runCase(browser, name, backup, settings = {}, pyArgs = [], tz = '
   assert.deepEqual(Object.keys(browserCsv).sort(), Object.keys(py).sort(), `${name}: file names differ`);
   for (const file of Object.keys(py)) assert.equal(browserCsv[file], py[file], `${name}: ${file} differs`);
   for (const text of Object.values(browserCsv)) assert.ok(Buffer.byteLength(text) < 1024 * 1024, 'CSV over 1 MB');
+
+  const panelText = await page.locator('#must-lb-panel').innerText();
+  for (const expected of options.panel || []) assert.match(panelText, expected, `${name}: panel text`);
 
   // The panel's links really download the files.
   const links = page.locator('#must-lb-panel a[download]');
@@ -144,7 +150,12 @@ try {
   await runCase(browser, 'fixture, no dates, no reviews', fixture, { DATES: 'none', INCLUDE_REVIEWS: false }, ['--dates', 'none', '--no-reviews']);
   const big = await runCase(browser, '5000 extra films (batching + 1 MB split)', bigFixture());
   assert.ok(Object.keys(big.py).some(n => n.includes('_part2')), 'big export was not split');
-  await errorCase(browser, 'unknown user shows an error', null, /Ошибка: Must profile: HTTP 404/);
+  await runCase(browser, 'profile URL as USERNAME', fixture, { USERNAME: 'https://mustapp.com/@testuser/watched' });
+  const gappy = structuredClone(fixture);
+  gappy.profile.lists.want.push(999);
+  await runCase(browser, 'reviews fail, an id is missing', gappy, {}, [], 'Europe/Moscow',
+    { reviewStatus: 400, panel: [/Рецензии для 17 позиций не скачались/, /Must не вернул данные для 1 позиций \(id: 999\)/] });
+  await errorCase(browser, 'unknown user shows an error', null, /Ошибка: Must profile: HTTP 404 — профиль @vladimirsalov не найден/);
   await errorCase(browser, 'private profile shows an error', { id: 1, is_private: true }, /private/);
   console.log('all browser tests passed');
 } finally {

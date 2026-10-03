@@ -22,6 +22,7 @@ Access Token") to add tmdbID/imdbID columns for exact matching on Letterboxd.
 import argparse
 import csv
 import datetime as dt
+import http.client
 import io
 import json
 import os
@@ -59,13 +60,13 @@ SPACE = "[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufe
 
 def normalize_username(value):
     value = str(value or "").strip()
-    value = re.sub(r"^https?://(?:www\.)?mustapp\.com/@?", "", value, flags=re.I)
+    value = re.sub(r"^(?:https?://)?(?:www\.)?mustapp\.com/@?", "", value, flags=re.I)
     return re.split(r"[/?#]", value.lstrip("@"))[0].strip()
 
 
 # ---------------------------------------------------------------- HTTP
 
-def fetch_json(url, method="GET", body=None, headers=None, retries=4, label="request"):
+def fetch_json(url, method="GET", body=None, headers=None, retries=5, label="request"):
     data = None if body is None else json.dumps(body).encode("utf-8")
     all_headers = {"user-agent": USER_AGENT}
     all_headers.update(headers or {})
@@ -73,19 +74,52 @@ def fetch_json(url, method="GET", body=None, headers=None, retries=4, label="req
         request = urllib.request.Request(url, data=data, headers=all_headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read()
+            try:
+                return no_surrogates(json.loads(raw.decode("utf-8")))
+            except ValueError:
+                raise RuntimeError(f"{label}: the server did not return JSON: {raw[:200]!r}") from None
         except urllib.error.HTTPError as error:
             retryable = error.code in (408, 429) or error.code >= 500
             if not retryable or attempt == retries:
                 detail = error.read().decode("utf-8", "replace")[:300]
                 raise RuntimeError(f"{label}: HTTP {error.code} {detail}") from None
-            wait = int(error.headers.get("retry-after") or 0) or 2 ** attempt
-        except (urllib.error.URLError, TimeoutError) as error:
+            wait = retry_after(error.headers.get("retry-after")) or 2 ** attempt
+        except (OSError, http.client.HTTPException) as error:
+            # Timeouts, dropped connections and truncated replies are worth another try.
             if attempt == retries:
-                raise RuntimeError(f"{label}: {error}") from None
+                raise RuntimeError(f"{label}: {getattr(error, 'reason', None) or error!r}") from None
             wait = 2 ** attempt
-        print(f"  {label} failed, retrying in {wait}s...", file=sys.stderr)
+        print(f"  {label} failed, retrying in {wait:g}s...", file=sys.stderr)
         time.sleep(wait)
+
+
+def retry_after(value):
+    """Seconds from a Retry-After header; 0 when absent or not a number (e.g. an HTTP date)."""
+    try:
+        return min(max(float(value), 0), 300)
+    except (TypeError, ValueError):
+        return 0
+
+
+def fetch_list(url, ids, headers, label):
+    result = fetch_json(url, "POST", {"ids": ids}, headers, label=label)
+    if not isinstance(result, list):
+        error = result.get("error") if isinstance(result, dict) else None
+        message = error.get("message") if isinstance(error, dict) else str(result)[:200]
+        raise RuntimeError(f"{label}: unexpected reply: {message}")
+    return [item for item in result if isinstance(item, dict)]
+
+
+def no_surrogates(value):
+    """Replace unpaired UTF-16 surrogates (cut-off emoji) with U+FFFD, as browsers do."""
+    if isinstance(value, str):
+        return re.sub("[\ud800-\udfff]", "\ufffd", value)
+    if isinstance(value, list):
+        return [no_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {no_surrogates(key): no_surrogates(item) for key, item in value.items()}
+    return value
 
 
 def fetch_must_backup(username, lang="en"):
@@ -101,14 +135,15 @@ def fetch_must_backup(username, lang="en"):
     lists = profile["lists"]
     ids = unique(list(lists.get("watched") or []) + list(lists.get("want") or []) + list(lists.get("shows") or []))
     headers = dict(MUST_HEADERS, **{"accept-language": lang})
-    products, reviews = [], []
+    products, reviews, reviews_failed = [], [], []
     for start in range(0, len(ids), MUST_BATCH):
         batch = ids[start:start + MUST_BATCH]
         url = f"{MUST_API}/users/id/{profile['id']}/products?embed="
-        products += fetch_json(url + "product", "POST", {"ids": batch}, headers, label="Must products")
+        products += fetch_list(url + "product", batch, headers, "Must products")
         try:
-            reviews += fetch_json(url + "review", "POST", {"ids": batch}, headers, label="Must reviews")
+            reviews += fetch_list(url + "review", batch, headers, "Must reviews")
         except RuntimeError as error:
+            reviews_failed += batch
             print(f"  warning: reviews for {len(batch)} titles unavailable ({error})", file=sys.stderr)
         print(f"  Must: {min(start + MUST_BATCH, len(ids))}/{len(ids)}", file=sys.stderr)
 
@@ -120,6 +155,7 @@ def fetch_must_backup(username, lang="en"):
         "profile": profile,
         "products": products,
         "reviews": reviews,
+        "reviews_failed": reviews_failed,
     }
 
 
@@ -184,7 +220,8 @@ def rating10(value):
 def build_entries(backup, tz=None):
     """Merge profile lists, products and reviews into normalized entries.
 
-    Returns (films, tv): films are Letterboxd candidates, tv are shows/seasons/episodes.
+    Returns (films, tv, missing): films are Letterboxd candidates, tv are shows/seasons/episodes,
+    missing are list ids Must returned no data for.
     Every entry: list, must_id, type, title, year, rating, date, review, tmdb_id, imdb_id.
     """
     lists = backup["profile"].get("lists") or {}
@@ -212,12 +249,15 @@ def build_entries(backup, tz=None):
             if text:
                 by_id[pid]["info"]["review"] = {"body": text}
 
-    films, tv, seen = [], [], set()
+    films, tv, missing, seen = [], [], [], set()
     for list_name, ids in (("watched", watched_ids), ("want", want_ids), ("shows", show_ids)):
         for pid in ids:
-            if pid in seen or pid not in by_id:
+            if pid in seen:
                 continue
             seen.add(pid)
+            if pid not in by_id:
+                missing.append(pid)
+                continue
             product, info = by_id[pid]["product"], by_id[pid]["info"]
             kind = product.get("type") or "movie"
             entry = {
@@ -237,7 +277,7 @@ def build_entries(backup, tz=None):
                 tv.append(entry)
             else:
                 films.append(entry)
-    return films, tv
+    return films, tv, missing
 
 
 def apply_date_policy(watched, mode="smart", window_days=30, bulk_per_day=5):
@@ -314,9 +354,16 @@ def tmdb_match(title, year, headers, lang):
         return "", ""
     if not results:
         return "", ""
-    exact = [m for m in results if title in (m.get("title"), m.get("original_title"))] or results
-    same_year = [m for m in exact if (m.get("release_date") or "")[:4] == year] or exact
-    best = max(same_year, key=lambda m: m.get("popularity") or 0)
+    # Only trust a hit whose title or year agrees: Letterboxd takes IDs as exact matches,
+    # so a wrong ID is worse than none (then Letterboxd matches by title and year itself).
+    folded = title.casefold()
+    titled = [m for m in results if folded in ((m.get("title") or "").casefold(),
+                                                (m.get("original_title") or "").casefold())]
+    dated = [m for m in (titled or results) if year and (m.get("release_date") or "")[:4] == year]
+    candidates = dated or titled
+    if not candidates:
+        return "", ""
+    best = max(candidates, key=lambda m: m.get("popularity") or 0)
     imdb = ""
     try:
         imdb = fetch_json(f"{TMDB_API}/movie/{best['id']}/external_ids", headers=headers,
@@ -382,6 +429,11 @@ def csv_parts(columns, rows, max_bytes=MAX_CSV_BYTES):
 
 
 def write_parts(out_dir, stem, parts):
+    # Drop this stem's files from an earlier run, so no stale _partN is left to upload twice.
+    stale = re.compile(re.escape(stem) + r"(?:_part\d+)?\.csv")
+    for name in os.listdir(out_dir):
+        if stale.fullmatch(name):
+            os.remove(os.path.join(out_dir, name))
     paths = []
     for number, text in enumerate(parts, 1):
         suffix = f"_part{number}" if len(parts) > 1 else ""
@@ -397,7 +449,7 @@ def write_parts(out_dir, stem, parts):
 def convert(backup, out_dir, dates="smart", window_days=30, bulk_per_day=5, tag="", tmdb_token="",
             include_reviews=True, tz=None):
     username = backup.get("username") or "must"
-    films, tv = build_entries(backup, tz)
+    films, tv, missing = build_entries(backup, tz)
     watched = [entry for entry in films if entry["list"] == "watched"]
     want = sort_watchlist([entry for entry in films if entry["list"] == "want"])
     if not include_reviews:
@@ -424,7 +476,8 @@ def convert(backup, out_dir, dates="smart", window_days=30, bulk_per_day=5, tag=
         json.dump(backup, file, ensure_ascii=False, indent=1)
     files.append(backup_path)
 
-    report = build_report(username, watched, want, tv, date_stats, dates, window_days, bulk_per_day, bool(tmdb_token))
+    report = build_report(username, watched, want, tv, date_stats, dates, window_days, bulk_per_day, bool(tmdb_token),
+                          missing, backup.get("reviews_failed") or [])
     report_path = os.path.join(out_dir, f"{username}_report.txt")
     with open(report_path, "w", encoding="utf-8") as file:
         file.write(report)
@@ -432,7 +485,8 @@ def convert(backup, out_dir, dates="smart", window_days=30, bulk_per_day=5, tag=
     return files, report
 
 
-def build_report(username, watched, want, tv, stats, dates, window_days, bulk_per_day, used_tmdb):
+def build_report(username, watched, want, tv, stats, dates, window_days, bulk_per_day, used_tmdb,
+                 missing=(), reviews_failed=()):
     rated = sum(1 for e in watched if e["rating"])
     reviewed = sum(1 for e in watched if e["review"])
     lines = [
@@ -452,6 +506,12 @@ def build_report(username, watched, want, tv, stats, dates, window_days, bulk_pe
             f"  dropped, {bulk_per_day}+ films on one day:   {stats['bulk']}",
         ]
     lines += [f"  no date in Must:                {stats['missing']}", ""]
+    if reviews_failed:
+        lines += [f"WARNING: reviews could not be downloaded for {len(reviews_failed)} titles. "
+                  "Run the export again before importing.", ""]
+    if missing:
+        lines += [f"Not returned by Must ({len(missing)}), not exported: Must ids "
+                  + ", ".join(map(str, missing)), ""]
     if used_tmdb:
         unmatched = [e for e in watched + want if not e["tmdb_id"]]
         lines.append(f"Not found on TMDB ({len(unmatched)}; Letterboxd will match these by title and year):")
@@ -466,11 +526,17 @@ def build_report(username, watched, want, tv, stats, dates, window_days, bulk_pe
 
 
 def load_backup(path):
-    with open(path, encoding="utf-8") as file:
-        backup = json.load(file)
+    try:
+        with open(path, encoding="utf-8") as file:
+            backup = json.load(file)
+    except OSError as error:
+        raise RuntimeError(f"cannot read {path}: {error.strerror}. Give the full path, "
+                           "e.g. ~/Downloads/<user>_must_backup.json") from None
+    except ValueError:
+        backup = None
     if not isinstance(backup, dict) or "profile" not in backup or "products" not in backup:
         raise RuntimeError(f"{path} is not a Must backup made by browser_export.js or this script")
-    return backup
+    return no_surrogates(backup)
 
 
 def main(argv=None):
@@ -492,19 +558,29 @@ def main(argv=None):
                         help="TMDB API Read Access Token for exact IDs (default: $TMDB_TOKEN)")
     args = parser.parse_args(argv)
 
+    tz = None
+    if args.tz:
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            parser.error("--tz needs Python 3.9 or newer")
+        try:
+            tz = ZoneInfo(args.tz)
+        except (KeyError, ValueError):
+            parser.error(f"unknown time zone {args.tz!r}; use a name like Europe/Moscow")
+
     if args.from_json:
         backup = load_backup(args.from_json)
     elif args.username:
         username = normalize_username(args.username)
         print(f"Downloading Must profile @{username}...", file=sys.stderr)
         backup = fetch_must_backup(username, args.lang)
+        # Save the download at once, so a later failure (e.g. TMDB) does not lose it.
+        os.makedirs(args.out_dir, exist_ok=True)
+        with open(os.path.join(args.out_dir, f"{username}_must_backup.json"), "w", encoding="utf-8") as file:
+            json.dump(backup, file, ensure_ascii=False, indent=1)
     else:
         parser.error("give a Must username or --from-json FILE")
-
-    tz = None
-    if args.tz:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo(args.tz)
     files, report = convert(backup, args.out_dir, args.dates, args.window_days, args.bulk_per_day,
                             args.tag, args.tmdb_token, not args.no_reviews, tz)
     print(report)
