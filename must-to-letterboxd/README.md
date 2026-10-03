@@ -37,7 +37,7 @@ python3 must_to_letterboxd.py vladimirsalov
 | Файл | Что внутри | Куда |
 |---|---|---|
 | `vladimirsalov_letterboxd_watched.csv` | просмотренные фильмы: оценка, дата, рецензия | <https://letterboxd.com/import/> |
-| `vladimirsalov_letterboxd_watchlist.csv` | «Хочу посмотреть» | Letterboxd → Watchlist → Import |
+| `vladimirsalov_letterboxd_watchlist.csv` | «Хочу посмотреть» | Watchlist → «Import films to watchlist…» |
 | `vladimirsalov_must_tv.csv` | сериалы (в Letterboxd только фильмы) | на память |
 | `vladimirsalov_must_backup.json` | все сырые данные Must | на память, на случай если Must закроется |
 
@@ -49,8 +49,13 @@ python3 must_to_letterboxd.py vladimirsalov
 2. Открой <https://letterboxd.com/import/>, загрузи `vladimirsalov_letterboxd_watched.csv`.
 3. Letterboxd покажет список найденных фильмов. Проверь те, что помечены как не найденные или
    неоднозначные, и подтверди импорт. **Отменить импорт потом нельзя.**
-4. Watchlist: открой свой Watchlist на Letterboxd, нажми «Import» и загрузи
-   `vladimirsalov_letterboxd_watchlist.csv`.
+4. Watchlist: открой <https://letterboxd.com/vladimirsalov/watchlist/> в браузере на компьютере,
+   в боковой панели нажми «Import films to watchlist…», загрузи
+   `vladimirsalov_letterboxd_watchlist.csv`, проверь совпадения и нажми «Add films to watchlist».
+   Фильмы, которые уже есть в watchlist, не задвоятся.
+
+Не загружай один и тот же `watched.csv` дважды с разными настройками дат: запись в дневнике с той же
+датой обновится, а с другой датой — добавится ещё одна.
 
 ## Даты просмотра
 
@@ -62,6 +67,9 @@ Must хранит не дату просмотра, а дату, когда фи
 в Must, и для дней, когда отмечено 5+ фильмов. Такие фильмы всё равно попадут в Letterboxd как
 просмотренные с оценкой — просто без записи в дневнике. Остальные получат запись в дневнике.
 
+Даты считаются в твоём часовом поясе (Must хранит время в UTC). Python берёт пояс компьютера,
+другой можно задать через `--tz Europe/Moscow`.
+
 - `--dates all` / `DATES = 'all'` — переносить все даты;
 - `--dates none` / `DATES = 'none'` — не переносить ни одной;
 - `--window-days`, `--bulk-per-day` — настроить пороги.
@@ -71,6 +79,9 @@ Must хранит не дату просмотра, а дату, когда фи
 - Рецензии на Letterboxd публичные. Не хочешь их переносить — `--no-reviews` / `INCLUDE_REVIEWS = false`.
 - `--tag must-import` / `TAG = 'must-import'` — пометить импортированные записи дневника тегом.
 - Названия берутся на английском — так Letterboxd находит фильмы лучше всего.
+- CSV в формате Letterboxd: кавычки внутри текста экранируются обратным слешем (`\"`), как требует
+  [документация импорта](https://letterboxd.com/about/importing-data/); переносы строк в рецензиях
+  становятся `<br>`.
 
 ## Тесты
 

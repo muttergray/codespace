@@ -32,7 +32,8 @@
     for (let attempt = 0; ; attempt++) {
       let response;
       try {
-        response = await fetch(url, options);
+        // No cookies: the public API answers the same as for a logged-out visitor.
+        response = await fetch(url, { credentials: 'omit', ...options });
       } catch (error) {
         if (attempt >= 4) throw new Error(`${label}: ${error.message}`);
         await sleep(1000 * 2 ** attempt);
@@ -81,11 +82,24 @@
   // Mirrors build_entries / apply_date_policy in must_to_letterboxd.py.
 
   const productId = item => (item.product || {}).id || (item.user_product_info || {}).product_id;
+  const clean = value => String(value || '').trim();
   const datePart = value => { const m = String(value || '').match(/^\d{4}-\d{2}-\d{2}/); return m ? m[0] : ''; };
+  // Must stores UTC times; the day a film was marked is the one in this browser's time zone.
+  function localDate(value) {
+    const text = String(value || '');
+    const m = text.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})/);
+    if (!m) return datePart(text);
+    const clock = m[2].length === 5 ? m[2] + ':00' : m[2];
+    const zone = m[4] === 'Z' ? 'Z' : m[4].includes(':') ? m[4] : m[4].slice(0, 3) + ':' + m[4].slice(3);
+    const d = new Date(`${m[1]}T${clock}${zone}`);
+    if (isNaN(d)) return m[1];
+    const pad = n => String(n).padStart(2, '0');
+    return `${String(d.getFullYear()).padStart(4, '0')}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
   function reviewText(info) {
     let review = (info || {}).review;
     if (review && typeof review === 'object') review = review.body;
-    return String(review || '').trim();
+    return clean(review);
   }
   function rating10(value) {
     let rate = null;
@@ -126,11 +140,11 @@
           list: listName,
           must_id: pid,
           type: kind,
-          title: String(product.title || '').trim(),
+          title: clean(product.title),
           year: datePart(product.release_date).slice(0, 4),
           status: info.status || '',
           rating: rating10(info.rate),
-          date: datePart(info.watched_at || info.modified_at),
+          date: localDate(info.watched_at || info.modified_at),
           review: reviewText(info),
           tmdb_id: '',
           imdb_id: '',
@@ -167,16 +181,25 @@
     return stats;
   }
 
-  function sortWatched(watched) {
-    const key = e => [e.watched_date || '0000', e.date || '0000'];
-    return watched.slice().sort((a, b) => {
-      const [a1, a2] = key(a), [b1, b2] = key(b);
-      return a1 < b1 ? -1 : a1 > b1 ? 1 : a2 < b2 ? -1 : a2 > b2 ? 1 : 0;
-    });
-  }
+  const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  // Oldest first, so Letterboxd creates diary entries in the order they happened.
+  const sortWatched = watched => watched.slice().sort((a, b) =>
+    compare(a.watched_date || '0000', b.watched_date || '0000') || compare(a.date || '0000', b.date || '0000'));
+  // Oldest first: Letterboxd adds rows in file order, so recent Must additions stay recent.
+  const sortWatchlist = want => want.slice().sort((a, b) => compare(a.date || '0000', b.date || '0000'));
 
   // ------------------------------------------------------------ CSV
 
+  // Letterboxd escapes quotes inside quoted text with a backslash, not by doubling them
+  // (https://letterboxd.com/about/importing-data/).
+  function lbField(value) {
+    let s = String(value ?? '');
+    if (s.endsWith('\\')) s += ' ';  // a trailing backslash would escape the closing quote
+    if (!/[",\r\n]|^[ \t]|[ \t]$/.test(s)) return s;
+    return `"${s.replace(/\\"/g, '\\ "').replace(/"/g, '\\"')}"`;
+  }
+  const lbLine = values => values.map(lbField).join(',') + '\n';
+  // RFC 4180, for the TV file that is read by people and spreadsheets, not Letterboxd.
   const csvField = value => {
     const s = String(value ?? '');
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -185,11 +208,11 @@
   const byteLength = text => new TextEncoder().encode(text).length;
 
   function csvParts(columns, rows) {
-    const header = csvLine(columns);
+    const header = lbLine(columns);
     const parts = [];
     let current = [], size = byteLength(header);
     for (const row of rows) {
-      const line = csvLine(row);
+      const line = lbLine(row);
       const length = byteLength(line);
       if (current.length && size + length > MAX_CSV_BYTES) {
         parts.push(header + current.join(''));
@@ -202,7 +225,7 @@
   }
 
   const watchedRow = e => [e.tmdb_id, e.imdb_id, e.title, e.year, e.rating, e.watched_date,
-    e.watched_date ? TAG : '', e.review.replace(/\r\n|\r|\n/g, '<br>')];
+    e.watched_date ? clean(TAG) : '', e.review.replace(/\r\n|\r|\n/g, '<br>')];
   const watchlistRow = e => [e.tmdb_id, e.imdb_id, e.title, e.year];
   const tvRow = e => [e.list, e.must_id, e.type, e.title, e.year, e.status, e.rating, e.date, e.review];
 
@@ -248,7 +271,7 @@
     const backup = await fetchMustBackup(USERNAME);
     const { films, tv } = buildEntries(backup);
     const watched = films.filter(e => e.list === 'watched');
-    const want = films.filter(e => e.list === 'want');
+    const want = sortWatchlist(films.filter(e => e.list === 'want'));
     if (!INCLUDE_REVIEWS) watched.forEach(e => { e.review = ''; });
     const stats = applyDatePolicy(watched, DATES, WINDOW_DAYS, BULK_PER_DAY);
 
@@ -267,7 +290,7 @@
       DATES === 'smart'
         ? `Даты для дневника: оставлено ${stats.kept}; убрано ${stats.window} из первых ${WINDOW_DAYS} дней в Must и ${stats.bulk} из дней с ${BULK_PER_DAY}+ фильмами; без даты ${stats.missing}.`
         : `Даты для дневника (${DATES}): оставлено ${stats.kept}, без даты ${stats.missing}.`,
-      'Скачай файлы ниже. *_letterboxd_watched.csv → letterboxd.com/import, *_letterboxd_watchlist.csv → импорт на странице Watchlist.',
+      'Скачай файлы ниже. *_letterboxd_watched.csv → letterboxd.com/import, *_letterboxd_watchlist.csv → страница Watchlist → «Import films to watchlist…».',
     ];
     lines.forEach(line => log(line));
     showPanel(lines, files);

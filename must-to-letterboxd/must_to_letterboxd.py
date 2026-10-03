@@ -53,6 +53,8 @@ USER_AGENT = "must-to-letterboxd/1.0"
 WATCHED_COLUMNS = ["tmdbID", "imdbID", "Title", "Year", "Rating10", "WatchedDate", "Tags", "Review"]
 WATCHLIST_COLUMNS = ["tmdbID", "imdbID", "Title", "Year"]
 TV_COLUMNS = ["List", "MustID", "Type", "Title", "Year", "Status", "Rating10", "Date", "Review"]
+# JavaScript's \s, so browser_export.js trims exactly the same characters.
+SPACE = "[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]"
 
 
 def normalize_username(value):
@@ -140,12 +142,32 @@ def review_text(info):
     review = (info or {}).get("review")
     if isinstance(review, dict):
         review = review.get("body")
-    return str(review or "").strip()
+    return clean(review)
+
+
+def clean(value):
+    return re.sub(f"^{SPACE}+|{SPACE}+$", "", str(value or ""))
 
 
 def date_part(value):
     match = re.match(r"\d{4}-\d{2}-\d{2}", str(value or ""))
     return match.group(0) if match else ""
+
+
+def local_date(value, tz=None):
+    """Calendar date of a Must timestamp in the given time zone (default: this computer's).
+
+    Must stores UTC times; the day you marked a film is the local one.
+    """
+    text = str(value or "")
+    match = re.match(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})", text)
+    if not match:
+        return date_part(text)
+    day, clock, fraction, zone = match.groups()
+    clock = clock if clock.count(":") == 2 else clock + ":00"
+    zone = "+00:00" if zone == "Z" else zone if ":" in zone else zone[:3] + ":" + zone[3:]
+    stamp = dt.datetime.fromisoformat(f"{day}T{clock}.{(fraction or '0')[:6].ljust(6, '0')}{zone}")
+    return stamp.astimezone(tz).date().isoformat()
 
 
 def rating10(value):
@@ -159,7 +181,7 @@ def rating10(value):
     return str(value) if isinstance(value, int) and 1 <= value <= 10 else ""
 
 
-def build_entries(backup):
+def build_entries(backup, tz=None):
     """Merge profile lists, products and reviews into normalized entries.
 
     Returns (films, tv): films are Letterboxd candidates, tv are shows/seasons/episodes.
@@ -202,11 +224,11 @@ def build_entries(backup):
                 "list": list_name,
                 "must_id": pid,
                 "type": kind,
-                "title": str(product.get("title") or "").strip(),
+                "title": clean(product.get("title")),
                 "year": date_part(product.get("release_date"))[:4],
                 "status": info.get("status") or "",
                 "rating": rating10(info.get("rate")),
-                "date": date_part(info.get("watched_at") or info.get("modified_at")),
+                "date": local_date(info.get("watched_at") or info.get("modified_at"), tz),
                 "review": review_text(info),
                 "tmdb_id": "",
                 "imdb_id": "",
@@ -260,6 +282,11 @@ def sort_watched(watched):
     return sorted(watched, key=lambda e: (e["watched_date"] or "0000", e["date"] or "0000"))
 
 
+def sort_watchlist(want):
+    # Oldest first: Letterboxd adds rows in file order, so recent Must additions stay recent.
+    return sorted(want, key=lambda e: e["date"] or "0000")
+
+
 # ---------------------------------------------------------------- TMDB (optional)
 
 def tmdb_enrich(films, token, lang="en-US"):
@@ -301,7 +328,27 @@ def tmdb_match(title, year, headers, lang):
 
 # ---------------------------------------------------------------- CSV
 
+def lb_field(value):
+    """One field in Letterboxd's CSV dialect.
+
+    Letterboxd's importer wants quotes inside quoted text escaped with a backslash
+    (\\"), not doubled as in RFC 4180 (https://letterboxd.com/about/importing-data/).
+    """
+    text = "" if value is None else str(value)
+    if text.endswith("\\"):
+        text += " "  # a trailing backslash would escape the closing quote
+    if not re.search(r'[",\r\n]|^[ \t]|[ \t]$', text):
+        return text
+    text = text.replace('\\"', '\\ "')  # keep a literal backslash from escaping a quote
+    return '"' + text.replace('"', '\\"') + '"'
+
+
+def lb_line(values):
+    return ",".join(lb_field(value) for value in values) + "\n"
+
+
 def csv_line(values):
+    """RFC 4180 line, for files that are read by people and spreadsheets, not Letterboxd."""
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\n").writerow(values)
     return buffer.getvalue()
@@ -318,11 +365,11 @@ def watchlist_row(entry):
 
 
 def csv_parts(columns, rows, max_bytes=MAX_CSV_BYTES):
-    """Render rows as one or more CSV texts, each under max_bytes when encoded as UTF-8."""
-    header = csv_line(columns)
+    """Render rows as one or more Letterboxd CSV texts, each under max_bytes as UTF-8."""
+    header = lb_line(columns)
     parts, current, size = [], [], len(header.encode("utf-8"))
     for row in rows:
-        line = csv_line(row)
+        line = lb_line(row)
         length = len(line.encode("utf-8"))
         if current and size + length > max_bytes:
             parts.append(header + "".join(current))
@@ -348,11 +395,11 @@ def write_parts(out_dir, stem, parts):
 # ---------------------------------------------------------------- main
 
 def convert(backup, out_dir, dates="smart", window_days=30, bulk_per_day=5, tag="", tmdb_token="",
-            include_reviews=True):
+            include_reviews=True, tz=None):
     username = backup.get("username") or "must"
-    films, tv = build_entries(backup)
+    films, tv = build_entries(backup, tz)
     watched = [entry for entry in films if entry["list"] == "watched"]
-    want = [entry for entry in films if entry["list"] == "want"]
+    want = sort_watchlist([entry for entry in films if entry["list"] == "want"])
     if not include_reviews:
         for entry in watched:
             entry["review"] = ""
@@ -365,7 +412,7 @@ def convert(backup, out_dir, dates="smart", window_days=30, bulk_per_day=5, tag=
     os.makedirs(out_dir, exist_ok=True)
     files = []
     files += write_parts(out_dir, f"{username}_letterboxd_watched",
-                         csv_parts(WATCHED_COLUMNS, [watched_row(e, tag) for e in watched]))
+                         csv_parts(WATCHED_COLUMNS, [watched_row(e, clean(tag)) for e in watched]))
     files += write_parts(out_dir, f"{username}_letterboxd_watchlist",
                          csv_parts(WATCHLIST_COLUMNS, [watchlist_row(e) for e in want]))
     tv_rows = [[e["list"], e["must_id"], e["type"], e["title"], e["year"], e["status"], e["rating"],
@@ -440,6 +487,7 @@ def main(argv=None):
     parser.add_argument("--tag", default="", help="Letterboxd tag for imported diary entries, e.g. must-import")
     parser.add_argument("--no-reviews", action="store_true", help="do not export reviews (they are public on Letterboxd)")
     parser.add_argument("--lang", default="en", help="Must title language (default: %(default)s)")
+    parser.add_argument("--tz", help="time zone for watch dates, e.g. Europe/Moscow (default: this computer's)")
     parser.add_argument("--tmdb-token", default=os.environ.get("TMDB_TOKEN", ""),
                         help="TMDB API Read Access Token for exact IDs (default: $TMDB_TOKEN)")
     args = parser.parse_args(argv)
@@ -453,8 +501,12 @@ def main(argv=None):
     else:
         parser.error("give a Must username or --from-json FILE")
 
+    tz = None
+    if args.tz:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(args.tz)
     files, report = convert(backup, args.out_dir, args.dates, args.window_days, args.bulk_per_day,
-                            args.tag, args.tmdb_token, not args.no_reviews)
+                            args.tag, args.tmdb_token, not args.no_reviews, tz)
     print(report)
     print("Files:")
     for path in files:

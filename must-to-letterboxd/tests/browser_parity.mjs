@@ -31,8 +31,8 @@ function bigFixture() {
   for (let i = 0; i < 5000; i++) {
     const item = structuredClone(base);
     item.product.id = item.user_product_info.product_id = 10000 + i;
-    item.product.title = `Film ${i}, "quoted"`;
-    item.user_product_info.modified_at = `20${10 + (i % 15)}-0${1 + (i % 9)}-1${i % 10}T10:00:00.000Z`;
+    item.product.title = [`Film ${i}, "quoted"`, `Film ${i} \\`, `Film ${i} \\"x\\"`, ` Film ${i}\u00a0`][i % 4];
+    item.user_product_info.modified_at = `20${10 + (i % 15)}-0${1 + (i % 9)}-1${i % 10}T${String(i % 24).padStart(2, '0')}:30:00.000Z`;
     item.user_product_info.rate = (i % 10) + 1;
     backup.products.push(item);
     const review = structuredClone(item);
@@ -44,22 +44,23 @@ function bigFixture() {
   return backup;
 }
 
-function pythonFiles(backup, extraArgs) {
+function pythonFiles(backup, extraArgs, tz) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'must-py-'));
   const input = path.join(dir, 'input.json');
   fs.writeFileSync(input, JSON.stringify(backup));
   const out = path.join(dir, 'out');
   execFileSync('python3', [path.join(root, 'must_to_letterboxd.py'), '--from-json', input, '--out-dir', out, ...extraArgs],
-    { stdio: 'pipe' });
+    { stdio: 'pipe', env: { ...process.env, TZ: tz } });
   const files = {};
   for (const name of fs.readdirSync(out)) if (name.endsWith('.csv')) files[name] = fs.readFileSync(path.join(out, name), 'utf8');
   return files;
 }
 
-async function runCase(browser, name, backup, settings = {}, pyArgs = []) {
+async function runCase(browser, name, backup, settings = {}, pyArgs = [], tz = 'Europe/Moscow') {
   const username = backup.profile.uri;
   const requests = [];
-  const page = await browser.newPage({ acceptDownloads: true });
+  const context = await browser.newContext({ acceptDownloads: true, timezoneId: tz });
+  const page = await context.newPage();
   page.on('pageerror', error => { throw error; });
   await page.route('https://mustapp.com/**', async route => {
     const request = route.request();
@@ -95,7 +96,7 @@ async function runCase(browser, name, backup, settings = {}, pyArgs = []) {
   // Same-origin, English titles requested.
   assert.ok(requests.filter(r => r.path.startsWith('/api/')).every(r => r.headers['accept-language'] === 'en'));
 
-  const py = pythonFiles(result.backup, pyArgs);
+  const py = pythonFiles(result.backup, pyArgs, tz);
   const browserCsv = Object.fromEntries(result.files.filter(f => f.name.endsWith('.csv')).map(f => [f.name, f.text]));
   assert.deepEqual(Object.keys(browserCsv).sort(), Object.keys(py).sort(), `${name}: file names differ`);
   for (const file of Object.keys(py)) assert.equal(browserCsv[file], py[file], `${name}: ${file} differs`);
@@ -108,8 +109,8 @@ async function runCase(browser, name, backup, settings = {}, pyArgs = []) {
   assert.equal(download.suggestedFilename(), result.files[0].name);
   assert.equal(fs.readFileSync(await download.path(), 'utf8'), result.files[0].text);
 
-  await page.close();
-  console.log(`ok - ${name}: ${Object.keys(py).length} CSV files identical (${requests.length} requests)`);
+  await context.close();
+  console.log(`ok - ${name} [${tz}]: ${Object.keys(py).length} CSV files identical (${requests.length} requests)`);
   return { result, py };
 }
 
@@ -135,6 +136,10 @@ const browser = await chromium.launch();
 try {
   const { py } = await runCase(browser, 'fixture, defaults', fixture);
   assert.match(py['testuser_letterboxd_watched.csv'], /^tmdbID,imdbID,Title,Year,Rating10,WatchedDate,Tags,Review\n/);
+  assert.match(py['testuser_letterboxd_watched.csv'], /,Perfect Days,2023,10,2025-01-06,,/);  // 22:00 UTC is next day in Moscow
+  assert.match(py['testuser_letterboxd_watchlist.csv'], /^tmdbID,imdbID,Title,Year\n,,Mickey 17,2025\n,,"\\"Weird\\" Title, With Comma",2026\n$/);
+  const ny = await runCase(browser, 'fixture, defaults', fixture, {}, [], 'America/New_York');
+  assert.match(ny.py['testuser_letterboxd_watched.csv'], /,Perfect Days,2023,10,2025-01-05,,/);
   await runCase(browser, 'fixture, all dates + tag', fixture, { DATES: 'all', TAG: 'must-import' }, ['--dates', 'all', '--tag', 'must-import']);
   await runCase(browser, 'fixture, no dates, no reviews', fixture, { DATES: 'none', INCLUDE_REVIEWS: false }, ['--dates', 'none', '--no-reviews']);
   const big = await runCase(browser, '5000 extra films (batching + 1 MB split)', bigFixture());

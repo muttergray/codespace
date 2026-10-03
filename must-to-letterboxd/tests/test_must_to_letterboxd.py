@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,15 +17,49 @@ import must_to_letterboxd as m  # noqa: E402
 
 FIXTURE = os.path.join(HERE, "fixtures", "must_backup.json")
 
+# Dates are converted to the computer's time zone; pin it so results don't depend on the machine.
+os.environ["TZ"] = "UTC"
+time.tzset()
+
 
 def load_fixture():
     with open(FIXTURE, encoding="utf-8") as file:
         return json.load(file)
 
 
+def parse_lb_line(line):
+    """Parse one line of Letterboxd's CSV dialect: quotes inside quoted text are \\"."""
+    fields, field, quoted, i = [], "", False, 0
+    while i < len(line):
+        char = line[i]
+        if quoted and char == "\\" and line[i + 1:i + 2] == '"':
+            field += '"'
+            i += 2
+            continue
+        if char == '"' and (quoted or field == ""):
+            quoted = not quoted
+        elif char == "," and not quoted:
+            fields.append(field)
+            field = ""
+        else:
+            field += char
+        i += 1
+    assert not quoted, f"unterminated quote in {line!r}"
+    return fields + [field]
+
+
+def parse_lb_csv(text):
+    lines = text.split("\n")
+    assert lines[-1] == "", "file must end with a newline"
+    header, *rows = [parse_lb_line(line) for line in lines[:-1]]
+    for row in rows:
+        assert len(row) == len(header), row
+    return [dict(zip(header, row)) for row in rows]
+
+
 def read_csv(path):
     with open(path, encoding="utf-8", newline="") as file:
-        return list(csv.DictReader(file))
+        return parse_lb_csv(file.read())
 
 
 class HelpersTest(unittest.TestCase):
@@ -41,6 +76,37 @@ class HelpersTest(unittest.TestCase):
         for value in [None, 0, 11, -1, 7.5, "7.5", "", "abc", True, [], {}]:
             self.assertEqual(m.rating10(value), "", value)
 
+    def test_local_date(self):
+        from zoneinfo import ZoneInfo
+        moscow, new_york = ZoneInfo("Europe/Moscow"), ZoneInfo("America/New_York")
+        self.assertEqual(m.local_date("2025-01-05T22:00:00.000Z", moscow), "2025-01-06")
+        self.assertEqual(m.local_date("2025-01-05T22:00:00.000Z", new_york), "2025-01-05")
+        self.assertEqual(m.local_date("2025-01-06T03:00Z", new_york), "2025-01-05")
+        self.assertEqual(m.local_date("2025-01-05T22:00:00+0300", moscow), "2025-01-05")
+        self.assertEqual(m.local_date("2025-01-05T23:59:59.9999999Z", m.dt.timezone.utc), "2025-01-05")
+        self.assertEqual(m.local_date("2025-01-05"), "2025-01-05")
+        self.assertEqual(m.local_date(None), "")
+
+    def test_lb_field(self):
+        self.assertEqual(m.lb_field("Brother"), "Brother")
+        self.assertEqual(m.lb_field(None), "")
+        self.assertEqual(m.lb_field(7), "7")
+        self.assertEqual(m.lb_field("Joel Coen, Ethan Coen"), '"Joel Coen, Ethan Coen"')
+        self.assertEqual(m.lb_field('say "hi"'), '"say \\"hi\\""')
+        self.assertEqual(m.lb_field("a\nb"), '"a\nb"')
+        self.assertEqual(m.lb_field(" padded"), '" padded"')
+        self.assertEqual(m.lb_field("ends\\"), '"ends\\ "')
+        self.assertEqual(m.lb_field('x\\"y'), '"x\\ \\"y"')
+        # Round trip through Letterboxd's dialect; backslash edge cases gain a space.
+        cases = {"plain": "plain", "a,b": "a,b", 'q "x", y': 'q "x", y', "¯\\_(ツ)_/¯": "¯\\_(ツ)_/¯",
+                 "ends\\": "ends\\ ", 'x\\"y': 'x\\ "y'}
+        for text, expected in cases.items():
+            self.assertEqual(parse_lb_line(m.lb_field(text) + ",z"), [expected, "z"], text)
+
+    def test_clean(self):
+        self.assertEqual(m.clean("\ufeff  Брат \u00a0\n"), "Брат")
+        self.assertEqual(m.clean(None), "")
+
     def test_date_part(self):
         self.assertEqual(m.date_part("2024-03-10T20:00:00.000Z"), "2024-03-10")
         self.assertEqual(m.date_part(None), "")
@@ -53,13 +119,16 @@ class HelpersTest(unittest.TestCase):
         seen = []
         for part in parts:
             self.assertLessEqual(len(part.encode("utf-8")), 1000)
-            reader = list(csv.reader(io.StringIO(part)))
-            self.assertEqual(reader[0], ["A", "B"])
-            seen += [row[0] for row in reader[1:]]
+            rows = parse_lb_csv(part)
+            seen += [row["A"] for row in rows]
         self.assertEqual(seen, [str(i) for i in range(100)])
 
     def test_csv_parts_empty_has_header(self):
         self.assertEqual(m.csv_parts(["A", "B"], []), ["A,B\n"])
+
+    def test_csv_parts_quotes(self):
+        text = m.csv_parts(["Title", "Review"], [['"Weird" Title, With Comma', 'He said "no".']])[0]
+        self.assertEqual(text, 'Title,Review\n"\\"Weird\\" Title, With Comma","He said \\"no\\"."\n')
 
 
 class BuildEntriesTest(unittest.TestCase):
@@ -151,6 +220,10 @@ class ConvertTest(unittest.TestCase):
         tiger = next(r for r in watched if r["Title"].startswith("Crouching"))
         self.assertEqual(tiger["Title"], "Crouching Tiger, Hidden Dragon")
         self.assertEqual(tiger["Review"], 'Wire-fu at its best.<br>Saw it twice, "wow".')
+        days = next(r for r in watched if r["Title"] == "Perfect Days")
+        self.assertEqual(days["Review"], 'Komorebi ¯\\_(ツ)_/¯ — "perfect" \\ ')
+        with open(os.path.join(self.out, "testuser_letterboxd_watched.csv"), encoding="utf-8") as file:
+            self.assertIn(',"Wire-fu at its best.<br>Saw it twice, \\"wow\\"."\n', file.read())
         self.assertEqual(tiger["Tags"], "")  # no diary date -> no tag
         dune = next(r for r in watched if r["Title"] == "Dune: Part Two")
         self.assertEqual((dune["Year"], dune["Rating10"], dune["WatchedDate"], dune["Tags"]),
@@ -158,8 +231,17 @@ class ConvertTest(unittest.TestCase):
         dated = [r["WatchedDate"] for r in watched if r["WatchedDate"]]
         self.assertEqual(dated, sorted(dated))
         watchlist = read_csv(os.path.join(self.out, "testuser_letterboxd_watchlist.csv"))
+        # Must lists newest first; the watchlist file goes oldest first.
         self.assertEqual([r["Title"] for r in watchlist], ["Mickey 17", '"Weird" Title, With Comma'])
+        tv = list(csv.DictReader(open(os.path.join(self.out, "testuser_must_tv.csv"), encoding="utf-8", newline="")))
+        self.assertEqual([r["Title"] for r in tv], ["Breaking Bad", "Severance"])
         self.assertIn("Watched films:   12", report)
+
+    def test_time_zone(self):
+        from zoneinfo import ZoneInfo
+        m.convert(load_fixture(), self.out, dates="all", tz=ZoneInfo("Europe/Moscow"))
+        watched = read_csv(os.path.join(self.out, "testuser_letterboxd_watched.csv"))
+        self.assertEqual(next(r for r in watched if r["Title"] == "Perfect Days")["WatchedDate"], "2025-01-06")
 
     def test_no_reviews(self):
         m.convert(load_fixture(), self.out, include_reviews=False)

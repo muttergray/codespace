@@ -25,8 +25,8 @@
     301
    ],
    "want": [
-    201,
-    202
+    202,
+    201
    ],
    "shows": [
     302
@@ -486,7 +486,10 @@
     "status": "watched",
     "rate": 10,
     "modified_at": "2025-01-05T22:00:00.000Z",
-    "review": null
+    "review": {
+     "body": "Komorebi ¯\\_(ツ)_/¯ — \"perfect\" \\",
+     "reviewed_at": "2025-01-05T22:00:00.000Z"
+    }
    }
   },
   {
