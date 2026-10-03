@@ -1,0 +1,80 @@
+# Must → Letterboxd
+
+Переносит фильмы из [Must](https://mustapp.com) в [Letterboxd](https://letterboxd.com):
+просмотренные (с оценками, рецензиями и датами) и список «Хочу посмотреть».
+
+Профиль Must должен быть публичным. Логин и пароль не нужны, данные никуда не отправляются.
+
+## Способ 1 — скрипт в браузере (2 минуты)
+
+1. Открой <https://mustapp.com/@vladimirsalov> (можно войти в аккаунт, но не обязательно).
+2. Открой консоль:
+   - **Safari:** Настройки → Дополнения → включи «Показывать функции для веб-разработчиков»,
+     затем меню «Разработка» → «Показать консоль JavaScript» (⌥⌘C).
+   - **Chrome:** ⌥⌘J (Mac) или F12 → вкладка Console. Если Chrome попросит, сначала введи
+     `allow pasting` и нажми Enter.
+3. Скопируй всё содержимое [`browser_export.js`](browser_export.js), вставь в консоль и нажми Enter.
+4. Справа вверху появится панель со ссылками — скачай каждый файл.
+
+В первой строке скрипта стоит `USERNAME = 'vladimirsalov'` — поменяй, чтобы выгрузить другой профиль.
+
+## Способ 2 — Python
+
+```sh
+python3 must_to_letterboxd.py vladimirsalov
+```
+
+Файлы появятся в папке `letterboxd_export/`. Нужен только Python 3.8+, без библиотек.
+Можно сконвертировать бэкап, скачанный браузерным скриптом:
+`python3 must_to_letterboxd.py --from-json vladimirsalov_must_backup.json`.
+
+Если задать `TMDB_TOKEN` ([бесплатный токен TMDB](https://www.themoviedb.org/settings/api),
+«API Read Access Token»), в CSV добавятся `tmdbID`/`imdbID`, и Letterboxd найдёт каждый фильм точно,
+а не по названию и году.
+
+## Что получится
+
+| Файл | Что внутри | Куда |
+|---|---|---|
+| `vladimirsalov_letterboxd_watched.csv` | просмотренные фильмы: оценка, дата, рецензия | <https://letterboxd.com/import/> |
+| `vladimirsalov_letterboxd_watchlist.csv` | «Хочу посмотреть» | Letterboxd → Watchlist → Import |
+| `vladimirsalov_must_tv.csv` | сериалы (в Letterboxd только фильмы) | на память |
+| `vladimirsalov_must_backup.json` | все сырые данные Must | на память, на случай если Must закроется |
+
+Файлы больше 1 МБ (лимит Letterboxd) автоматически делятся на `_part1`, `_part2`… — загружай по очереди.
+
+## Импорт в Letterboxd
+
+1. Войди на letterboxd.com как `vladimirsalov`.
+2. Открой <https://letterboxd.com/import/>, загрузи `vladimirsalov_letterboxd_watched.csv`.
+3. Letterboxd покажет список найденных фильмов. Проверь те, что помечены как не найденные или
+   неоднозначные, и подтверди импорт. **Отменить импорт потом нельзя.**
+4. Watchlist: открой свой Watchlist на Letterboxd, нажми «Import» и загрузи
+   `vladimirsalov_letterboxd_watchlist.csv`.
+
+## Даты просмотра
+
+Must хранит не дату просмотра, а дату, когда фильм отметили в приложении. Когда начинаешь
+пользоваться Must, обычно разом добавляешь сотни старых фильмов — и все они получают одну
+дату. В дневнике Letterboxd это выглядело бы как «400 фильмов за вечер».
+
+Поэтому по умолчанию (`smart`) дата **не** переносится для фильмов, отмеченных в первые 30 дней
+в Must, и для дней, когда отмечено 5+ фильмов. Такие фильмы всё равно попадут в Letterboxd как
+просмотренные с оценкой — просто без записи в дневнике. Остальные получат запись в дневнике.
+
+- `--dates all` / `DATES = 'all'` — переносить все даты;
+- `--dates none` / `DATES = 'none'` — не переносить ни одной;
+- `--window-days`, `--bulk-per-day` — настроить пороги.
+
+## Прочее
+
+- Рецензии на Letterboxd публичные. Не хочешь их переносить — `--no-reviews` / `INCLUDE_REVIEWS = false`.
+- `--tag must-import` / `TAG = 'must-import'` — пометить импортированные записи дневника тегом.
+- Названия берутся на английском — так Letterboxd находит фильмы лучше всего.
+
+## Тесты
+
+```sh
+python3 -m unittest discover -s tests   # конвертер и работа с API (на фейковом сервере)
+node tests/browser_parity.mjs           # браузерный скрипт в Chromium: результат совпадает с Python
+```

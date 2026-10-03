@@ -1,0 +1,532 @@
+{
+ "format": "must-backup/1",
+ "username": "testuser",
+ "fetched_at": "2026-10-03T00:00:00+00:00",
+ "lang": "en",
+ "profile": {
+  "id": 4242,
+  "uri": "testuser",
+  "name": "Test User",
+  "is_private": false,
+  "lists": {
+   "watched": [
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    301
+   ],
+   "want": [
+    201,
+    202
+   ],
+   "shows": [
+    302
+   ]
+  }
+ },
+ "products": [
+  {
+   "product": {
+    "id": 101,
+    "title": "The Godfather",
+    "release_date": "1972-03-14",
+    "type": "movie",
+    "poster_file_path": "/p/101.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 101,
+    "status": "watched",
+    "rate": 10,
+    "modified_at": "2021-03-01T10:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 102,
+    "title": "Crouching Tiger, Hidden Dragon",
+    "release_date": "2000-07-06",
+    "type": "movie",
+    "poster_file_path": "/p/102.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 102,
+    "status": "watched",
+    "rate": 8,
+    "modified_at": "2021-03-01T10:05:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 103,
+    "title": "Брат",
+    "release_date": "1997-05-17",
+    "type": "movie",
+    "poster_file_path": "/p/103.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 103,
+    "status": "watched",
+    "rate": 9,
+    "modified_at": "2021-03-02T11:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 104,
+    "title": "Dune: Part Two",
+    "release_date": "2024-02-27",
+    "type": "movie",
+    "poster_file_path": "/p/104.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 104,
+    "status": "watched",
+    "rate": 9,
+    "modified_at": "2024-03-10T20:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 105,
+    "title": "Oppenheimer",
+    "release_date": "2023-07-19",
+    "type": "movie",
+    "poster_file_path": "/p/105.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 105,
+    "status": "watched",
+    "rate": null,
+    "modified_at": "2023-07-25T21:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 106,
+    "title": "Unknown Festival Short",
+    "release_date": null,
+    "type": "movie",
+    "poster_file_path": "/p/106.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 106,
+    "status": "watched",
+    "rate": 0,
+    "modified_at": "2023-08-01T12:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 107,
+    "title": "Anora",
+    "release_date": "2024-05-21",
+    "type": "movie",
+    "poster_file_path": "/p/107.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 107,
+    "status": "watched",
+    "rate": 7,
+    "modified_at": "2024-12-20T12:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 108,
+    "title": "Conclave",
+    "release_date": "2024-10-25",
+    "type": "movie",
+    "poster_file_path": "/p/108.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 108,
+    "status": "watched",
+    "rate": 8,
+    "modified_at": "2024-12-20T13:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 109,
+    "title": "Nosferatu",
+    "release_date": "2024-12-25",
+    "type": "movie",
+    "poster_file_path": "/p/109.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 109,
+    "status": "watched",
+    "rate": 6,
+    "modified_at": "2024-12-20T14:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 110,
+    "title": "The Brutalist",
+    "release_date": "2024-12-20",
+    "type": "movie",
+    "poster_file_path": "/p/110.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 110,
+    "status": "watched",
+    "rate": 7,
+    "modified_at": "2024-12-20T15:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 111,
+    "title": "Flow",
+    "release_date": "2024-08-29",
+    "type": "movie",
+    "poster_file_path": "/p/111.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 111,
+    "status": "watched",
+    "rate": 9,
+    "modified_at": "2024-12-20T16:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 112,
+    "title": "Perfect Days",
+    "release_date": "2023-12-21",
+    "type": "movie",
+    "poster_file_path": "/p/112.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 112,
+    "status": "watched",
+    "rate": 10,
+    "modified_at": "2025-01-05T22:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 201,
+    "title": "Mickey 17",
+    "release_date": "2025-02-28",
+    "type": "movie",
+    "poster_file_path": "/p/201.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 201,
+    "status": "want",
+    "rate": null,
+    "modified_at": "2025-01-10T09:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 202,
+    "title": "\"Weird\" Title, With Comma",
+    "release_date": "2026-01-01",
+    "type": "movie",
+    "poster_file_path": "/p/202.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 202,
+    "status": "want",
+    "rate": null,
+    "modified_at": "2025-02-11T09:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 301,
+    "title": "Breaking Bad",
+    "release_date": "2008-01-20",
+    "type": "show",
+    "poster_file_path": "/p/301.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 301,
+    "status": "watched",
+    "rate": 10,
+    "modified_at": "2021-03-05T10:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "product": {
+    "id": 302,
+    "title": "Severance",
+    "release_date": "2022-02-18",
+    "type": "show",
+    "poster_file_path": "/p/302.jpg",
+    "items_count": 0,
+    "runtime": 100,
+    "subtitle": null,
+    "trailer_url": null,
+    "items_released_count": 0
+   },
+   "user_product_info": {
+    "product_id": 302,
+    "status": "watched",
+    "rate": null,
+    "modified_at": "2025-03-01T10:00:00.000Z",
+    "review": null
+   }
+  }
+ ],
+ "reviews": [
+  {
+   "user_product_info": {
+    "product_id": 101,
+    "status": "watched",
+    "rate": 10,
+    "modified_at": "2021-03-01T10:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 102,
+    "status": "watched",
+    "rate": 8,
+    "modified_at": "2021-03-01T10:05:00.000Z",
+    "review": {
+     "body": "Wire-fu at its best.\nSaw it twice, \"wow\".",
+     "reviewed_at": "2021-03-01T10:05:00.000Z"
+    }
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 103,
+    "status": "watched",
+    "rate": 9,
+    "modified_at": "2021-03-02T11:00:00.000Z",
+    "review": {
+     "body": "Лучший фильм\r\nдевяностых",
+     "reviewed_at": "2021-03-02T11:00:00.000Z"
+    }
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 104,
+    "status": "watched",
+    "rate": 9,
+    "modified_at": "2024-03-10T20:00:00.000Z",
+    "review": {
+     "body": "IMAX 🔥",
+     "reviewed_at": "2024-03-10T20:00:00.000Z"
+    }
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 105,
+    "status": "watched",
+    "rate": null,
+    "modified_at": "2023-07-25T21:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 106,
+    "status": "watched",
+    "rate": 0,
+    "modified_at": "2023-08-01T12:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 107,
+    "status": "watched",
+    "rate": 7,
+    "modified_at": "2024-12-20T12:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 108,
+    "status": "watched",
+    "rate": 8,
+    "modified_at": "2024-12-20T13:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 109,
+    "status": "watched",
+    "rate": 6,
+    "modified_at": "2024-12-20T14:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 110,
+    "status": "watched",
+    "rate": 7,
+    "modified_at": "2024-12-20T15:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 111,
+    "status": "watched",
+    "rate": 9,
+    "modified_at": "2024-12-20T16:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 112,
+    "status": "watched",
+    "rate": 10,
+    "modified_at": "2025-01-05T22:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 201,
+    "status": "want",
+    "rate": null,
+    "modified_at": "2025-01-10T09:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 202,
+    "status": "want",
+    "rate": null,
+    "modified_at": "2025-02-11T09:00:00.000Z",
+    "review": null
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 301,
+    "status": "watched",
+    "rate": 10,
+    "modified_at": "2021-03-05T10:00:00.000Z",
+    "review": {
+     "body": "Masterpiece",
+     "reviewed_at": "2021-03-05T10:00:00.000Z"
+    }
+   }
+  },
+  {
+   "user_product_info": {
+    "product_id": 302,
+    "status": "watched",
+    "rate": null,
+    "modified_at": "2025-03-01T10:00:00.000Z",
+    "review": null
+   }
+  }
+ ]
+}
