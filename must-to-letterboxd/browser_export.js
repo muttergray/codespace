@@ -33,17 +33,20 @@
 
   async function fetchJson(url, options, label) {
     for (let attempt = 0; ; attempt++) {
-      let response;
+      let response, text;
       try {
         // No cookies: the public API answers the same as for a logged-out visitor.
-        response = await fetch(url, { credentials: 'omit', ...options });
+        const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(60000) : undefined;
+        response = await fetch(url, { credentials: 'omit', signal, ...options });
+        if (response.ok) text = await response.text();
       } catch (error) {
+        // Timeouts, dropped connections and cut-off replies are worth another try.
         if (attempt >= 5) throw new Error(`${label}: ${error.message}`);
         await sleep(1000 * 2 ** attempt);
         continue;
       }
       if (response.ok) {
-        try { return await response.json(); } catch { throw new Error(`${label}: the server did not return JSON`); }
+        try { return JSON.parse(text); } catch { throw new Error(`${label}: the server did not return JSON`); }
       }
       const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
       if (!retryable || attempt >= 5) throw new Error(`${label}: HTTP ${response.status}`);
@@ -51,6 +54,9 @@
       await sleep((retryAfter || 2 ** attempt) * 1000);
     }
   }
+
+  const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+  const asObject = value => (isObject(value) ? value : {});
 
   async function fetchList(url, ids, headers, label) {
     const result = await fetchJson(url, { method: 'POST', headers, body: JSON.stringify({ ids }) }, label);
@@ -64,8 +70,11 @@
   async function fetchMustBackup(username) {
     const profile = await fetchJson(`${API}/users/uri/${encodeURIComponent(username)}`,
       { headers: { 'accept-language': LANG } }, 'Must profile');
-    if (!profile || profile.error) throw new Error((profile && profile.error && profile.error.message) || `Must user "${username}" not found`);
-    if (profile.is_private || !profile.lists) throw new Error('This Must profile is private. Make it public in Must settings and try again.');
+    if (!isObject(profile) || profile.error) throw new Error((isObject(profile) && asObject(profile.error).message) || `Must user "${username}" not found`);
+    if (profile.is_private || !isObject(profile.lists) || !Object.keys(profile.lists).length) {
+      throw new Error('This Must profile is private. Make it public in Must settings and try again.');
+    }
+    if (profile.id == null) throw new Error('Must profile: unexpected reply without a user id');
 
     const lists = profile.lists;
     const ids = [...new Set([...(lists.watched || []), ...(lists.want || []), ...(lists.shows || [])])];
@@ -98,7 +107,7 @@
   // ------------------------------------------------------------ conversion
   // Mirrors build_entries / apply_date_policy in must_to_letterboxd.py.
 
-  const productId = item => (item.product || {}).id || (item.user_product_info || {}).product_id;
+  const productId = item => asObject(item.product).id || asObject(item.user_product_info).product_id;
   const clean = value => String(value || '').trim();
   const datePart = value => { const m = String(value || '').match(/^\d{4}-\d{2}-\d{2}/); return m ? m[0] : ''; };
   // Must stores UTC times; the day a film was marked is the one in this browser's time zone.
@@ -131,7 +140,7 @@
     const byId = new Map();
     for (const item of products) {
       const pid = productId(item);
-      if (pid != null) byId.set(pid, { product: { ...(item.product || {}) }, info: { ...(item.user_product_info || {}) } });
+      if (pid != null) byId.set(pid, { product: { ...asObject(item.product) }, info: { ...asObject(item.user_product_info) } });
     }
     const reviews = backup.reviews || [];
     reviews.forEach((item, index) => {
@@ -139,7 +148,7 @@
       if (pid == null && reviews.length === products.length) pid = productId(products[index]);
       if (!byId.has(pid)) return;
       const target = byId.get(pid).info;
-      for (const [key, value] of Object.entries(item.user_product_info || {})) {
+      for (const [key, value] of Object.entries(asObject(item.user_product_info))) {
         if (value != null && target[key] == null) target[key] = value;
       }
       const text = reviewText(item.user_product_info);

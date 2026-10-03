@@ -59,9 +59,8 @@ SPACE = "[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufe
 
 
 def normalize_username(value):
-    value = str(value or "").strip()
-    value = re.sub(r"^(?:https?://)?(?:www\.)?mustapp\.com/@?", "", value, flags=re.I)
-    return re.split(r"[/?#]", value.lstrip("@"))[0].strip()
+    value = re.sub(r"^(?:https?://)?(?:www\.)?mustapp\.com/@?", "", clean(value), flags=re.I)
+    return clean(re.split(r"[/?#]", value.lstrip("@"))[0])
 
 
 # ---------------------------------------------------------------- HTTP
@@ -76,7 +75,8 @@ def fetch_json(url, method="GET", body=None, headers=None, retries=5, label="req
             with urllib.request.urlopen(request, timeout=60) as response:
                 raw = response.read()
             try:
-                return no_surrogates(json.loads(raw.decode("utf-8")))
+                # Decode like a browser: tolerate a BOM and bad bytes, refuse NaN/Infinity.
+                return no_surrogates(json.loads(raw.decode("utf-8-sig", "replace"), parse_constant=not_json))
             except ValueError:
                 raise RuntimeError(f"{label}: the server did not return JSON: {raw[:200]!r}") from None
         except urllib.error.HTTPError as error:
@@ -97,9 +97,18 @@ def fetch_json(url, method="GET", body=None, headers=None, retries=5, label="req
 def retry_after(value):
     """Seconds from a Retry-After header; 0 when absent or not a number (e.g. an HTTP date)."""
     try:
-        return min(max(float(value), 0), 300)
+        seconds = float(value)
     except (TypeError, ValueError):
         return 0
+    return 0 if seconds != seconds else min(max(seconds, 0), 300)
+
+
+def not_json(name):
+    raise ValueError(f"{name} is not valid JSON")
+
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
 
 
 def fetch_list(url, ids, headers, label):
@@ -127,12 +136,14 @@ def fetch_must_backup(username, lang="en"):
     profile = fetch_json(f"{MUST_API}/users/uri/{urllib.parse.quote(username)}",
                          headers={"accept-language": lang}, label="Must profile")
     if not isinstance(profile, dict) or profile.get("error"):
-        message = (profile.get("error") or {}).get("message") if isinstance(profile, dict) else None
+        message = as_dict(profile.get("error")).get("message") if isinstance(profile, dict) else None
         raise RuntimeError(message or f'Must user "{username}" not found')
-    if profile.get("is_private") or not profile.get("lists"):
+    lists = profile.get("lists")
+    if profile.get("is_private") or not isinstance(lists, dict) or not lists:
         raise RuntimeError("This Must profile is private. Make it public in Must settings and try again.")
+    if profile.get("id") is None:
+        raise RuntimeError("Must profile: unexpected reply without a user id")
 
-    lists = profile["lists"]
     ids = unique(list(lists.get("watched") or []) + list(lists.get("want") or []) + list(lists.get("shows") or []))
     headers = dict(MUST_HEADERS, **{"accept-language": lang})
     products, reviews, reviews_failed = [], [], []
@@ -171,7 +182,7 @@ def unique(values):
 # ---------------------------------------------------------------- conversion
 
 def product_id(item):
-    return (item.get("product") or {}).get("id") or (item.get("user_product_info") or {}).get("product_id")
+    return as_dict(item.get("product")).get("id") or as_dict(item.get("user_product_info")).get("product_id")
 
 
 def review_text(info):
@@ -233,8 +244,8 @@ def build_entries(backup, tz=None):
     for item in backup.get("products") or []:
         pid = product_id(item)
         if pid is not None:
-            by_id[pid] = {"product": dict(item.get("product") or {}),
-                          "info": dict(item.get("user_product_info") or {})}
+            by_id[pid] = {"product": dict(as_dict(item.get("product"))),
+                          "info": dict(as_dict(item.get("user_product_info")))}
 
     reviews = backup.get("reviews") or []
     for index, item in enumerate(reviews):
@@ -242,7 +253,7 @@ def build_entries(backup, tz=None):
         if pid is None and len(reviews) == len(backup.get("products") or []):
             pid = product_id(backup["products"][index])
         if pid in by_id:
-            for key, value in (item.get("user_product_info") or {}).items():
+            for key, value in as_dict(item.get("user_product_info")).items():
                 if value is not None and by_id[pid]["info"].get(key) is None:
                     by_id[pid]["info"][key] = value
             text = review_text(item.get("user_product_info"))
@@ -567,6 +578,9 @@ def main(argv=None):
         try:
             tz = ZoneInfo(args.tz)
         except (KeyError, ValueError):
+            from zoneinfo import available_timezones
+            if not available_timezones():
+                parser.error("no time zone database found; install it with: pip install tzdata")
             parser.error(f"unknown time zone {args.tz!r}; use a name like Europe/Moscow")
 
     if args.from_json:
